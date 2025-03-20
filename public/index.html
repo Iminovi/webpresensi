@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login Absensi</title>
+  <style>
+    body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f0f0f0; }
+    .login-container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+    input { display: block; width: 100%; margin: 10px 0; padding: 8px; }
+    button { width: 100%; padding: 10px; background-color: #4CAF50; color: white; border: none; cursor: pointer; }
+    button:hover { background-color: #45a049; }
+    #error { color: red; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="login-container">
+    <h2>Login Absensi</h2>
+    <input type="email" id="email" placeholder="Email" required>
+    <input type="password" id="password" placeholder="Kata Sandi" required>
+    <button onclick="login()">Login</button>
+    <p id="error"></p>
+  </div>
+
+  <!-- Gunakan versi compat untuk namespace -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyDZWUUArpxE3w5C1Nywbf990Q6vYjjsrJg",
+      authDomain: "absensi-41dac.firebaseapp.com",
+      databaseURL: "https://absensi-41dac-default-rtdb.asia-southeast1.firebasedatabase.app/",
+      projectId: "absensi-41dac",
+      storageBucket: "absensi-41dac.firebasestorage.app",
+      messagingSenderId: "321501533201",
+      appId: "1:321501533201:web:350f36d50ebc6957ec8db0"
+    };
+
+    // Inisialisasi Firebase
+    firebase.initializeApp(firebaseConfig);
+    console.log("Firebase initialized"); // Debug
+
+    // Fungsi login
+    function login() {
+      console.log("Tombol ditekan");
+      const email = document.getElementById("email").value;
+      const password = document.getElementById("password").value;
+      console.log("Email:", email, "Password:", password);
+      firebase.auth().signInWithEmailAndPassword(email, password)
+        .then((userCredential) => {
+          console.log("Login berhasil:", userCredential.user.email);
+          window.location.href = "/absensi.html";
+        })
+        .catch((error) => {
+          console.log("Error:", error);
+          document.getElementById("error").innerText = "Login gagal: " + error.message;
+        });
+    }
+  </script>
+</body>
+</html>

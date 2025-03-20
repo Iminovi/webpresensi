@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Absensi Karyawan</title>
+  <style>
+    table { border-collapse: collapse; width: 80%; margin: 20px auto; }
+    th, td { border: 1px solid black; padding: 10px; text-align: left; }
+    th { background-color: #f2f2f2; }
+    h1 { text-align: center; }
+    .logout { text-align: center; margin: 20px; }
+  </style>
+</head>
+<body>
+  <h1>Data Absensi Karyawan</h1>
+  <table id="absensiTable">
+    <tr><th>Nama</th><th>Status</th><th>Waktu</th><th>Tanggal</th></tr>
+  </table>
+  <div class="logout">
+    <a href="https://docs.google.com/spreadsheets/d/1hXYNr89-mzS-5SSe4Mfa3XElNHIDKDVI08iqpqsDcSI/edit" target="_blank">
+      <button>Lihat di Google Sheets</button>
+    </a>
+    <button onclick="logout()">Logout</button>
+  </div>
+
+  <!-- Gunakan versi compat -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyDZWUUArpxE3w5C1Nywbf990Q6vYjjsrJg",
+      authDomain: "absensi-41dac.firebaseapp.com",
+      databaseURL: "https://absensi-41dac-default-rtdb.asia-southeast1.firebasedatabase.app/",
+      projectId: "absensi-41dac",
+      storageBucket: "absensi-41dac.firebasestorage.app",
+      messagingSenderId: "321501533201",
+      appId: "1:321501533201:web:350f36d50ebc6957ec8db0"
+    };
+
+    // Inisialisasi Firebase
+    firebase.initializeApp(firebaseConfig);
+
+    // Cek status login
+    firebase.auth().onAuthStateChanged((user) => {
+      if (!user) {
+        window.location.href = "/";
+      }
+    });
+
+    // Ambil data absensi
+    const db = firebase.database();
+    const absensiRef = db.ref("absensi");
+
+    absensiRef.on("value", (snapshot) => {
+      const data = snapshot.val();
+      const table = document.getElementById("absensiTable");
+      table.innerHTML = "<tr><th>Nama</th><th>Status</th><th>Waktu</th><th>Tanggal</th></tr>";
+      for (let key in data) {
+        const row = data[key];
+        table.innerHTML += `<tr><td>${row.nama}</td><td>${row.status}</td><td>${row.waktu}</td><td>${row.tanggal}</td></tr>`;
+      }
+    });
+
+    // Fungsi logout
+    function logout() {
+      firebase.auth().signOut().then(() => {
+        window.location.href = "/";
+      });
+    }
+  </script>
+</body>
+</html>

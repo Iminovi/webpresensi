@@ -5,6 +5,7 @@
 #include <RTClib.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <EEPROM.h>
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -16,14 +17,19 @@ RTC_DS3231 rtc;
 SoftwareSerial mySerial(D1, D2);
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 
-const char* ssid = "NAMA_WIFI";//
+// Ganti per device
+const char* ssid = "NAMA_WIFI";
 const char* password = "PASSWORD_WIFI";
-#define FIREBASE_HOST "https://absensi-41dac-default-rtdb.asia-southeast1.firebasedatabase.app/"
-#define FIREBASE_AUTH "AIzaSyDZWUUArpxE3w5C1Nywbf990Q6vYjjsrJg"
+#define FIREBASE_HOST "https://absensi-device1-default-rtdb.asia-southeast1.firebasedatabase.app/" // Unik per device
+#define FIREBASE_AUTH "YOUR_API_KEY_DEVICE1" // Unik per device
 
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
+
+// EEPROM setup
+#define EEPROM_SIZE 512
+int writeAddr = 0; // Posisi tulis di EEPROM
 
 void setup() {
   Serial.begin(115200);
@@ -35,6 +41,7 @@ void setup() {
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { for(;;); }
   if (!rtc.begin()) { for(;;); }
 
+  EEPROM.begin(EEPROM_SIZE); // Inisialisasi EEPROM
   welcomeAnimation();
 
   WiFi.begin(ssid, password);
@@ -54,27 +61,31 @@ void setup() {
   } else {
     for(;;);
   }
+
+  // Sync data dari EEPROM saat pertama online
+  syncEEPROMData();
 }
 
 void loop() {
-  // Mode absensi normal
   int id = getFingerprintID();
   if (id >= 0) {
     checkTimeAndSend(id);
   }
 
-  // Cek perintah pendaftaran dari Firebase
-  Firebase.RTDB.getJSON(&fbdo, "/fingerprint/register");
-  if (fbdo.dataAvailable()) {
-    FirebaseJson json = fbdo.jsonObject();
-    String status;
-    json.get(status, "status");
-    if (status == "pending") {
-      int fingerId;
-      String fingerName;
-      json.get(fingerId, "id");
-      json.get(fingerName, "name");
-      registerFingerprintOnDevice(fingerId, fingerName);
+  // Cek perintah pendaftaran (opsional)
+  if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
+    Firebase.RTDB.getJSON(&fbdo, "/fingerprint/register");
+    if (fbdo.dataAvailable()) {
+      FirebaseJson json = fbdo.jsonObject();
+      String status;
+      json.get(status, "status");
+      if (status == "pending") {
+        int fingerId;
+        String fingerName;
+        json.get(fingerId, "id");
+        json.get(fingerName, "name");
+        registerFingerprintOnDevice(fingerId, fingerName);
+      }
     }
   }
 
@@ -97,7 +108,7 @@ int getFingerprintID() {
 
 void checkTimeAndSend(int id) {
   DateTime now = rtc.now();
-  String nama = "Karyawan" + String(id); // Ganti dengan mapping nama jika ada
+  String nama = "Karyawan" + String(id); // Ganti dengan mapping nama
   String status;
 
   int hour = now.hour();
@@ -120,26 +131,83 @@ void checkTimeAndSend(int id) {
   }
 
   String waktu = String(now.hour()) + ":" + (now.minute() < 10 ? "0" : "") + String(now.minute());
-  sendToFirebase(nama, status, waktu);
+  String tanggal = String(now.day()) + "-" + String(now.month()) + "-" + String(now.year());
+  String data = nama + "," + status + "," + waktu + "," + tanggal;
+
+  if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
+    sendToFirebase(data);
+  } else {
+    saveToEEPROM(data);
+    displayMessage("Disimpan lokal");
+  }
 }
 
-void sendToFirebase(String nama, String status, String waktu) {
-  if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
-    String path = "/absensi/" + String(millis());
-    FirebaseJson json;
-    json.set("nama", nama);
-    json.set("status", status);
-    json.set("waktu", waktu);
-    json.set("tanggal", String(rtc.now().day()) + "-" + String(rtc.now().month()) + "-" + String(rtc.now().year()));
+void sendToFirebase(String data) {
+  String path = "/absensi/" + String(millis());
+  FirebaseJson json;
+  String parts[4];
+  splitString(data, ',', parts, 4);
+  json.set("nama", parts[0]);
+  json.set("status", parts[1]);
+  json.set("waktu", parts[2]);
+  json.set("tanggal", parts[3]);
 
-    if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
-      buzzSuccess();
-      displayMessage("Absen Berhasil");
+  if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
+    buzzSuccess();
+    displayMessage("Absen Berhasil");
+  } else {
+    saveToEEPROM(data);
+    displayMessage("Disimpan lokal");
+  }
+}
+
+void saveToEEPROM(String data) {
+  if (writeAddr + data.length() + 1 >= EEPROM_SIZE) {
+    displayMessage("EEPROM penuh!");
+    return; // Lindungi overflow
+  }
+
+  for (int i = 0; i < data.length(); i++) {
+    EEPROM.write(writeAddr + i, data[i]);
+  }
+  EEPROM.write(writeAddr + data.length(), '\n'); // Penanda akhir entri
+  writeAddr += data.length() + 1;
+  EEPROM.commit();
+}
+
+void syncEEPROMData() {
+  if (WiFi.status() != WL_CONNECTED || !Firebase.ready()) return;
+
+  String buffer = "";
+  for (int i = 0; i < writeAddr; i++) {
+    char c = EEPROM.read(i);
+    if (c == '\n') {
+      sendToFirebase(buffer);
+      buffer = "";
     } else {
-      buzzFail();
-      displayMessage("Gagal Kirim");
+      buffer += c;
     }
   }
+
+  // Reset EEPROM setelah sync
+  if (buffer == "") {
+    for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, 0);
+    writeAddr = 0;
+    EEPROM.commit();
+    displayMessage("Sync selesai");
+  }
+}
+
+void splitString(String str, char delimiter, String* output, int maxParts) {
+  int part = 0;
+  int start = 0;
+  for (int i = 0; i < str.length() && part < maxParts; i++) {
+    if (str[i] == delimiter) {
+      output[part++] = str.substring(start, i);
+      start = i + 1;
+    }
+  }
+  output[part] = str.substring(start);
 }
 
 void registerFingerprintOnDevice(int id, String name) {
@@ -198,6 +266,8 @@ void updateRegisterStatus(String status) {
   json.set("status", status);
   Firebase.RTDB.setJSON(&fbdo, "/fingerprint/register", &json);
 }
+
+
 
 void displayMessage(String msg) {
   display.clearDisplay();

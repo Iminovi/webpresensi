@@ -7,30 +7,35 @@
 #include <Adafruit_SSD1306.h>
 #include <EEPROM.h>
 
-// Definisi pin dan konstanta
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 #define BUZZER_PIN D7
-SoftwareSerial mySerial(D1, D2); // D1 (TX), D2 (RX) untuk sensor sidik jari
+SoftwareSerial mySerial(D1, D2);
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 RTC_DS3231 rtc;
 
 const char* ssid = "NAMA_WIFI";
 const char* password = "PASSWORD_WIFI";
-#define FIREBASE_HOST "https://absensi-device1-default-rtdb.asia-southeast1.firebasedatabase.app/" // Ganti per device
-#define FIREBASE_AUTH "YOUR_API_KEY_DEVICE1" // Ganti per device
+#define FIREBASE_HOST "https://absensi-device1-default-rtdb.asia-southeast1.firebasedatabase.app/"
+#define FIREBASE_AUTH "YOUR_API_KEY_DEVICE1"
 
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 
-// EEPROM dan variabel global
 #define EEPROM_SIZE 512
 int writeAddr = 0;
-String karyawanList[33]; // Array untuk nama karyawan (ID 1-32)
-bool checkedToday = false; // Flag untuk cek "Tidak Masuk" sekali sehari
+bool checkedToday = false;
+
+struct Shift {
+  int masukStart;
+  int masukEnd;
+  int pulangStart;
+  int pulangEnd;
+};
+Shift shiftConfig[3]; // 0: Pagi, 1: Siang, 2: Malam
 
 void setup() {
   Serial.begin(115200);
@@ -38,7 +43,7 @@ void setup() {
   finger.begin(57600);
 
   pinMode(BUZZER_PIN, OUTPUT);
-  Wire.begin(D5, D6); // D5 (SCL), D6 (SDA) untuk I2C
+  Wire.begin(D5, D6);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { for(;;); }
   if (!rtc.begin()) { for(;;); }
   EEPROM.begin(EEPROM_SIZE);
@@ -64,15 +69,14 @@ void setup() {
     for(;;);
   }
 
-  loadKaryawan(); // Muat daftar karyawan dari Firebase
-  syncEEPROMData(); // Sinkron data offline saat startup
+  loadShiftConfig();
+  syncEEPROMData();
 }
 
 void loop() {
   int id = getFingerprintID();
   if (id >= 0) checkTimeAndSend(id);
 
-  // Cek pendaftaran sidik jari dari web
   if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
     Firebase.RTDB.getJSON(&fbdo, "/fingerprint/register");
     if (fbdo.dataAvailable()) {
@@ -87,20 +91,30 @@ void loop() {
         registerFingerprintOnDevice(fingerId, fingerName);
       }
     }
+
+    Firebase.RTDB.getJSON(&fbdo, "/fingerprint/delete");
+    if (fbdo.dataAvailable()) {
+      FirebaseJson json = fbdo.jsonObject();
+      String status;
+      json.get(status, "status");
+      if (status == "pending") {
+        int fingerId;
+        json.get(fingerId, "id");
+        deleteFingerprintOnDevice(fingerId);
+      }
+    }
   }
 
-  // Otomatisasi "Tidak Masuk" jam 17:00
   DateTime now = rtc.now();
   if (now.hour() == 17 && now.minute() == 0 && !checkedToday) {
     checkAbsensiHarian();
     checkedToday = true;
   }
-  if (now.hour() == 0 && now.minute() == 0) checkedToday = false; // Reset flag tengah malam
+  if (now.hour() == 0 && now.minute() == 0) checkedToday = false;
 
   delay(1000);
 }
 
-// Fungsi untuk baca sidik jari
 int getFingerprintID() {
   uint8_t p = finger.getImage();
   if (p != FINGERPRINT_OK) return -1;
@@ -115,25 +129,29 @@ int getFingerprintID() {
   }
 }
 
-// Cek waktu absensi dan kirim data
 void checkTimeAndSend(int id) {
   DateTime now = rtc.now();
-  String nama = (id >= 1 && id <= 32) ? karyawanList[id] : "Unknown";
-  if (nama == "Unknown" || nama == "") nama = "Karyawan" + String(id);
+  String nama = getKaryawanName(id);
+  if (nama == "") nama = "Karyawan" + String(id);
+  String shift = getKaryawanShift(id);
   String status;
 
-  int hour = now.hour();
-  int minute = now.minute();
-  int totalMinutes = hour * 60 + minute;
+  int totalMinutes = now.hour() * 60 + now.minute();
+  Shift currentShift;
+  if (shift == "Pagi") currentShift = shiftConfig[0];
+  else if (shift == "Siang") currentShift = shiftConfig[1];
+  else if (shift == "Malam") currentShift = shiftConfig[2];
+  else {
+    buzzFail();
+    displayMessage("Shift tidak diketahui!");
+    return;
+  }
 
-  int masukStart = 16 * 60 + 30; // 16:30
-  int masukEnd = 17 * 60;        // 17:00
-  int pulangStart = 20 * 60 + 10; // 20:10
-  int pulangEnd = 20 * 60 + 40;   // 20:40
-
-  if (totalMinutes >= masukStart && totalMinutes <= masukEnd) {
+  if (totalMinutes >= currentShift.masukStart && totalMinutes <= currentShift.masukEnd) {
     status = "Masuk";
-  } else if (totalMinutes >= pulangStart && totalMinutes <= pulangEnd) {
+  } else if (totalMinutes >= currentShift.pulangStart && totalMinutes <= currentShift.pulangEnd) {
+    status = "Pulang";
+  } else if (shift == "Malam" && totalMinutes >= 0 && totalMinutes <= currentShift.pulangEnd) {
     status = "Pulang";
   } else {
     buzzFail();
@@ -153,7 +171,6 @@ void checkTimeAndSend(int id) {
   }
 }
 
-// Kirim data ke Firebase
 void sendToFirebase(String data) {
   String path = "/absensi/" + String(millis());
   FirebaseJson json;
@@ -173,7 +190,6 @@ void sendToFirebase(String data) {
   }
 }
 
-// Simpan ke EEPROM saat offline
 void saveToEEPROM(String data) {
   if (writeAddr + data.length() + 1 >= EEPROM_SIZE) {
     displayMessage("EEPROM penuh!");
@@ -187,7 +203,6 @@ void saveToEEPROM(String data) {
   EEPROM.commit();
 }
 
-// Sinkron data EEPROM saat online
 void syncEEPROMData() {
   if (WiFi.status() != WL_CONNECTED || !Firebase.ready()) return;
   String buffer = "";
@@ -208,50 +223,89 @@ void syncEEPROMData() {
   }
 }
 
-// Muat daftar karyawan dari Firebase
-void loadKaryawan() {
+String getKaryawanName(int id) {
   if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
-    Firebase.RTDB.getJSON(&fbdo, "/karyawan");
-    if (fbdo.dataAvailable()) {
-      FirebaseJson json = fbdo.jsonObject();
-      for (int i = 1; i <= 32; i++) {
-        String key = String(i);
-        json.get(karyawanList[i], key);
+    Firebase.RTDB.getString(&fbdo, "/karyawan/" + String(id));
+    if (fbdo.dataAvailable()) return fbdo.stringData();
+  }
+  return "";
+}
+
+String getKaryawanShift(int id) {
+  if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
+    Firebase.RTDB.getString(&fbdo, "/shift/" + String(id));
+    if (fbdo.dataAvailable()) return fbdo.stringData();
+  }
+  return "";
+}
+
+void loadShiftConfig() {
+  if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
+    String shifts[] = {"Pagi", "Siang", "Malam"};
+    for (int i = 0; i < 3; i++) {
+      Firebase.RTDB.getJSON(&fbdo, "/shift_config/" + shifts[i]);
+      if (fbdo.dataAvailable()) {
+        FirebaseJson json = fbdo.jsonObject();
+        json.get(shiftConfig[i].masukStart, "masukStart");
+        json.get(shiftConfig[i].masukEnd, "masukEnd");
+        json.get(shiftConfig[i].pulangStart, "pulangStart");
+        json.get(shiftConfig[i].pulangEnd, "pulangEnd");
       }
     }
   }
 }
 
-// Cek absensi harian untuk "Tidak Masuk"
 void checkAbsensiHarian() {
   DateTime now = rtc.now();
   String tanggalHariIni = String(now.day()) + "-" + String(now.month()) + "-" + String(now.year());
 
-  // Ambil absensi hari ini dari Firebase
+  FirebaseJson karyawanJson;
+  Firebase.RTDB.getJSON(&fbdo, "/karyawan");
+  if (!fbdo.dataAvailable()) return;
+  karyawanJson = fbdo.jsonObject();
+
+  FirebaseJson izinJson;
+  String izinPath = "/izin/" + tanggalHariIni;
+  Firebase.RTDB.getJSON(&fbdo, izinPath);
+  bool hasIzin = fbdo.dataAvailable();
+  if (hasIzin) izinJson = fbdo.jsonObject();
+
+  FirebaseJson absensiJson;
   Firebase.RTDB.getJSON(&fbdo, "/absensi");
-  String absensiHariIni[33] = {""};
+  String absensiHariIni[1000] = {""}; // Buffer sementara, sesuaikan kapasitas
+  int absensiCount = 0;
   if (fbdo.dataAvailable()) {
-    FirebaseJson json = fbdo.jsonObject();
+    absensiJson = fbdo.jsonObject();
     FirebaseJsonData result;
-    for (FirebaseJson::Iterator it = json.iteratorBegin(); it != json.iteratorEnd(); ++it) {
+    for (FirebaseJson::Iterator it = absensiJson.iteratorBegin(); it != absensiJson.iteratorEnd(); ++it) {
       String key = it.key();
-      json.get(result, key);
+      absensiJson.get(result, key);
       FirebaseJson absensi = result.jsonObject();
       String nama, tanggal;
       absensi.get(nama, "nama");
       absensi.get(tanggal, "tanggal");
-      if (tanggal == tanggalHariIni) {
-        for (int i = 1; i <= 32; i++) {
-          if (karyawanList[i] == nama) absensiHariIni[i] = nama;
-        }
+      if (tanggal == tanggalHariIni && absensiCount < 1000) {
+        absensiHariIni[absensiCount++] = nama;
       }
     }
   }
 
-  // Tambah "Tidak Masuk" untuk karyawan yang belum absen
-  for (int i = 1; i <= 32; i++) {
-    if (karyawanList[i] != "" && absensiHariIni[i] == "") {
-      String data = karyawanList[i] + ",Tidak Masuk,-," + tanggalHariIni;
+  FirebaseJsonData karyawanData;
+  for (FirebaseJson::Iterator it = karyawanJson.iteratorBegin(); it != karyawanJson.iteratorEnd(); ++it) {
+    String id = it.key();
+    karyawanJson.get(karyawanData, id);
+    String nama = karyawanData.stringValue;
+    bool sudahAbsen = false;
+    for (int i = 0; i < absensiCount; i++) {
+      if (absensiHariIni[i] == nama) {
+        sudahAbsen = true;
+        break;
+      }
+    }
+    bool izin = false;
+    if (hasIzin) izinJson.get(izin, nama);
+    if (nama != "" && !sudahAbsen && !izin) {
+      String data = nama + ",Tidak Masuk,-," + tanggalHariIni;
       if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
         sendToFirebase(data);
       } else {
@@ -262,7 +316,6 @@ void checkAbsensiHarian() {
   displayMessage("Cek Tidak Masuk");
 }
 
-// Pendaftaran sidik jari dari web
 void registerFingerprintOnDevice(int id, String name) {
   displayMessage("Scan sidik jari");
   uint8_t p = finger.getImage();
@@ -283,7 +336,6 @@ void registerFingerprintOnDevice(int id, String name) {
   }
   p = finger.storeModel(id);
   if (p == FINGERPRINT_OK) {
-    karyawanList[id] = name; // Update lokal
     Firebase.RTDB.setString(&fbdo, "/fingerprint/register/status", "success");
     buzzSuccess();
     displayMessage("Daftar Sukses");
@@ -293,7 +345,20 @@ void registerFingerprintOnDevice(int id, String name) {
   }
 }
 
-// Fungsi pendukung
+void deleteFingerprintOnDevice(int id) {
+  uint8_t p = finger.deleteModel(id);
+  if (p == FINGERPRINT_OK) {
+    Firebase.RTDB.remove(&fbdo, "/karyawan/" + String(id));
+    Firebase.RTDB.remove(&fbdo, "/shift/" + String(id));
+    Firebase.RTDB.setString(&fbdo, "/fingerprint/delete/status", "success");
+    buzzSuccess();
+    displayMessage("Hapus Sukses");
+  } else {
+    Firebase.RTDB.setString(&fbdo, "/fingerprint/delete/status", "failed");
+    displayMessage("Hapus Gagal");
+  }
+}
+
 void splitString(String str, char delimiter, String* output, int maxParts) {
   int part = 0, start = 0;
   for (int i = 0; i < str.length() && part < maxParts; i++) {

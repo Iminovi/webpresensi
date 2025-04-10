@@ -16,10 +16,10 @@ Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 RTC_DS3231 rtc;
 
-const char* ssid = "NAMA_WIFI";
-const char* password = "PASSWORD_WIFI";
-#define FIREBASE_HOST "https://absensi-device1-default-rtdb.asia-southeast1.firebasedatabase.app/"
-#define FIREBASE_AUTH "YOUR_API_KEY_DEVICE1"
+const char* ssid = "NAMA_WIFI";             // Ganti dengan nama Wi-Fi Anda
+const char* password = "PASSWORD_WIFI";      // Ganti dengan password Wi-Fi Anda
+#define FIREBASE_HOST "https://absensi-device1-default-rtdb.asia-southeast1.firebasedatabase.app/" // Ganti dengan URL Firebase Anda
+#define FIREBASE_AUTH "YOUR_API_KEY_DEVICE1" // Ganti dengan API Key Firebase Anda
 
 FirebaseData fbdo;
 FirebaseAuth auth;
@@ -272,7 +272,7 @@ void checkAbsensiHarian() {
 
   FirebaseJson absensiJson;
   Firebase.RTDB.getJSON(&fbdo, "/absensi");
-  String absensiHariIni[1000] = {""}; // Buffer sementara, sesuaikan kapasitas
+  String absensiHariIni[1000] = {""};
   int absensiCount = 0;
   if (fbdo.dataAvailable()) {
     absensiJson = fbdo.jsonObject();
@@ -304,12 +304,21 @@ void checkAbsensiHarian() {
     }
     bool izin = false;
     if (hasIzin) izinJson.get(izin, nama);
-    if (nama != "" && !sudahAbsen && !izin) {
-      String data = nama + ",Tidak Masuk,-," + tanggalHariIni;
-      if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
-        sendToFirebase(data);
-      } else {
-        saveToEEPROM(data);
+    if (nama != "") {
+      if (!sudahAbsen && !izin) {
+        String data = nama + ",Tidak Masuk,-," + tanggalHariIni;
+        if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
+          sendToFirebase(data);
+        } else {
+          saveToEEPROM(data);
+        }
+      } else if (!sudahAbsen && izin) {
+        String data = nama + ",Izin,-," + tanggalHariIni;
+        if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
+          sendToFirebase(data);
+        } else {
+          saveToEEPROM(data);
+        }
       }
     }
   }
